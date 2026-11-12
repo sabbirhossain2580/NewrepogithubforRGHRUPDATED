@@ -1,0 +1,6 @@
+{
+  "name": "HR Task & KPI Performance Dashboard",
+  "description": "Enterprise HR Task, Responsibility & KPI Performance Management System for Renaissance Group Human Resources & Organization Development department.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

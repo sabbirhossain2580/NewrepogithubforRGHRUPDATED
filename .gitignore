@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+coverage/
+.vercel
+.output/
+
+# Environment files and credentials (CRITICAL: Never commit to public GitHub)
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
+!.env.example
+
+# Firebase & Cloud Credentials
+firebase-applet-config.json
+firebase_credentials.json
+firebase-admin-key.json
+service-account*.json
+*.pem
+*.key
+*.cert
+
+# Operating System & IDE Files
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Session & Cache
+.npm
+.eslintcache
