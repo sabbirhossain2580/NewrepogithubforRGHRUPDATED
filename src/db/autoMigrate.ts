@@ -1,5 +1,5 @@
 // src/db/autoMigrate.ts
-import { pool, db } from './index.ts';
+import { pool, db, withDbRetry } from './index.ts';
 import {
   employees,
   users,
@@ -11,6 +11,10 @@ import { RAW_MRF_DATA } from './seedRecruitment.ts';
 let isDbInitialized = false;
 let initPromise: Promise<void> | null = null;
 
+export function isDatabaseReady(): boolean {
+  return isDbInitialized;
+}
+
 export async function ensureDatabaseReady(): Promise<void> {
   if (isDbInitialized) return;
   if (initPromise) return initPromise;
@@ -19,9 +23,19 @@ export async function ensureDatabaseReady(): Promise<void> {
     try {
       console.log('Running automatic database schema and table initialization check...');
 
-      // 1. Create all essential tables if they do not exist
-      try {
-        await pool.query(`
+      // Verify connectivity first with retry for Cloud SQL cold-start wake-up
+      await withDbRetry(() => pool.query('SELECT 1'), 4);
+
+      // 1. Create essential tables only if they do not exist yet
+      const tableCheck = await withDbRetry(
+        () => pool.query(`SELECT to_regclass('public.recruitment_requisitions') AS req_tbl, to_regclass('public.employees') AS emp_tbl`),
+        2
+      );
+      const tablesExist = Boolean(tableCheck.rows[0]?.req_tbl && tableCheck.rows[0]?.emp_tbl);
+
+      if (!tablesExist) {
+        try {
+          await withDbRetry(() => pool.query(`
         -- 1. Users Table
         CREATE TABLE IF NOT EXISTS users (
           id SERIAL PRIMARY KEY,
@@ -247,9 +261,10 @@ export async function ensureDatabaseReady(): Promise<void> {
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW()
         );
-      `);
-      } catch (ddlErr: any) {
-        console.warn('Database auto-migration note (DDL schema query skipped or permission restricted):', ddlErr.message || ddlErr);
+      `), 2);
+        } catch (ddlErr: any) {
+          console.warn('Database auto-migration note (DDL schema query skipped or permission restricted):', ddlErr.message || ddlErr);
+        }
       }
 
       // 2. Ensure initial HR admin and personnel exist
@@ -431,8 +446,8 @@ export async function ensureDatabaseReady(): Promise<void> {
       isDbInitialized = true;
       console.log('Automatic database schema check and initial data verification complete.');
     } catch (err: any) {
-      console.warn('Database auto-migration check note:', err.message || err);
-      isDbInitialized = true;
+      console.warn('Database auto-migration check note (will retry on next request):', err.message || err);
+      isDbInitialized = false;
     } finally {
       initPromise = null;
     }

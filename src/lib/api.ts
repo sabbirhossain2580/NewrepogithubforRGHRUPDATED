@@ -184,124 +184,50 @@ export const api = {
 
   // Employees
   async getEmployees(): Promise<Employee[]> {
-    try {
-      const res = await fetch('/api/employees', { headers: getHeaders() });
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        const data = await res.json();
-        if (Array.isArray(data) && data.length > 0) {
-          if (typeof window !== 'undefined') {
-            localStorage.setItem('rg_employees_cache', JSON.stringify(data));
-          }
-          return data;
-        }
-      }
-    } catch {}
-
-    if (typeof window !== 'undefined') {
-      const cached = localStorage.getItem('rg_employees_cache');
-      if (cached) {
-        try {
-          return JSON.parse(cached);
-        } catch {}
-      }
-      localStorage.setItem('rg_employees_cache', JSON.stringify(DEFAULT_HR_EMPLOYEES));
+    const res = await fetch('/api/employees', { headers: getHeaders() });
+    const result = await parseJsonResponse(res);
+    if (!res.ok || result?.error) {
+      throw new Error(result?.error || 'Failed to fetch employees');
     }
-    return DEFAULT_HR_EMPLOYEES;
+    return Array.isArray(result) ? result : [];
   },
 
   async createEmployee(data: Partial<Employee>): Promise<Employee> {
-    try {
-      const res = await fetch('/api/employees', {
-        method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify(data),
-      });
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        const created = await res.json();
-        return created;
-      }
-    } catch {}
-
-    // Fallback for Vercel / serverless
-    const current = await this.getEmployees();
-    const newEmp: Employee = {
-      id: Date.now(),
-      employeeCode: data.employeeCode || `EMP-${Math.floor(1000 + Math.random() * 9000)}`,
-      name: data.name || 'New HR Employee',
-      email: data.email || 'employee@renaissance.com.bd',
-      designation: data.designation || 'Executive, HR',
-      department: data.department || 'Human Resources & OD',
-      isHeadOfHr: !!data.isHeadOfHr,
-      status: (data.status as any) || 'active',
-      avatarInitials: (data.name || 'HE')
-        .split(' ')
-        .map((n) => n[0])
-        .slice(0, 2)
-        .join(''),
-      joinDate: data.joinDate || 'Today',
-      totalTasks: 0,
-      completedTasks: 0,
-      pendingTasks: 0,
-      overdueTasks: 0,
-      taskCompletionRate: 0,
-    };
-    const updated = [newEmp, ...current];
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('rg_employees_cache', JSON.stringify(updated));
+    const res = await fetch('/api/employees', {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify(data),
+    });
+    const result = await parseJsonResponse(res);
+    if (!res.ok || result?.error) {
+      throw new Error(result?.error || 'Failed to create employee');
     }
-    return newEmp;
+    return result;
   },
 
   async updateEmployee(id: number, data: Partial<Employee>): Promise<Employee> {
-    try {
-      const res = await fetch(`/api/employees/${id}`, {
-        method: 'PUT',
-        headers: getHeaders(),
-        body: JSON.stringify(data),
-      });
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        return await res.json();
-      }
-    } catch {}
-
-    // Fallback for Vercel / serverless
-    const current = await this.getEmployees();
-    let updatedEmp: Employee | null = null;
-    const updatedList = current.map((emp) => {
-      if (emp.id === id) {
-        updatedEmp = { ...emp, ...data };
-        return updatedEmp;
-      }
-      return emp;
+    const res = await fetch(`/api/employees/${id}`, {
+      method: 'PUT',
+      headers: getHeaders(),
+      body: JSON.stringify(data),
     });
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('rg_employees_cache', JSON.stringify(updatedList));
+    const result = await parseJsonResponse(res);
+    if (!res.ok || result?.error) {
+      throw new Error(result?.error || 'Failed to update employee');
     }
-    return updatedEmp || ({ id, ...data } as any);
+    return result;
   },
 
   async deleteEmployee(id: number): Promise<{ success: boolean; message?: string }> {
-    try {
-      const res = await fetch(`/api/employees/${id}`, {
-        method: 'DELETE',
-        headers: getHeaders(),
-      });
-      const data = await parseJsonResponse(res);
-      if (res.ok && !data.error) {
-        return data;
-      }
-    } catch {}
-
-    // Fallback for Vercel / serverless
-    const current = await this.getEmployees();
-    const updatedList = current.filter((emp) => emp.id !== id);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('rg_employees_cache', JSON.stringify(updatedList));
+    const res = await fetch(`/api/employees/${id}`, {
+      method: 'DELETE',
+      headers: getHeaders(),
+    });
+    const result = await parseJsonResponse(res);
+    if (!res.ok || result?.error) {
+      throw new Error(result?.error || 'Failed to delete employee');
     }
-    return { success: true, message: 'Employee removed successfully' };
+    return result;
   },
 
   // Responsibilities

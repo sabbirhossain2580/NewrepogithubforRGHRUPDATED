@@ -2,7 +2,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
-import { db, pool } from './src/db/index.ts';
+import { db, pool, withDbRetry } from './src/db/index.ts';
 import {
   employees,
   responsibilities,
@@ -20,13 +20,13 @@ import {
 import { eq, desc, asc, and, or, sql } from 'drizzle-orm';
 import { requireAuth, AuthRequest } from './src/middleware/auth.ts';
 import { seedDatabase } from './src/db/seed.ts';
-import { seedRecruitmentDatabase, RAW_MRF_DATA } from './src/db/seedRecruitment.ts';
+import { seedRecruitmentDatabase } from './src/db/seedRecruitment.ts';
 import {
   authenticateUser,
   issueSessionToken,
 } from './src/server/authService.ts';
 
-import { ensureDatabaseReady } from './src/db/autoMigrate.ts';
+import { ensureDatabaseReady, isDatabaseReady } from './src/db/autoMigrate.ts';
 import cors from 'cors';
 
 dotenv.config();
@@ -74,6 +74,17 @@ app.use('/api', (req: Request, res: Response, next) => {
   record.count += 1;
   if (record.count > 1000) {
     return res.status(429).json({ error: 'Rate limit exceeded. Please wait a moment.' });
+  }
+  next();
+});
+
+// Ensure database is initialized before handling DB-backed API routes
+app.use('/api', async (req: Request, _res: Response, next: NextFunction) => {
+  if (req.path.startsWith('/auth/') || req.path === '/download-repo') {
+    return next();
+  }
+  if (!isDatabaseReady()) {
+    await ensureDatabaseReady().catch(() => {});
   }
   next();
 });
@@ -184,7 +195,9 @@ app.get('/api/me', requireAuth, async (req: AuthRequest, res: Response) => {
     const user = req.user!;
     let employeeData = null;
     if (user.employeeCode) {
-      const emps = await db.select().from(employees).where(eq(employees.employeeCode, user.employeeCode));
+      const emps = await withDbRetry(() =>
+        db.select().from(employees).where(eq(employees.employeeCode, user.employeeCode!))
+      );
       employeeData = emps[0] || null;
     }
     res.json({
@@ -199,10 +212,14 @@ app.get('/api/me', requireAuth, async (req: AuthRequest, res: Response) => {
 // 2. Employees Directory & Summary Metrics
 app.get('/api/employees', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
-    const allEmployees = await db.select().from(employees).orderBy(asc(employees.employeeCode));
-    const allTasks = await db.select().from(tasks);
-    const allKpis = await db.select().from(kpis);
-    const allResps = await db.select().from(responsibilities);
+    const [allEmployees, allTasks, allKpis, allResps] = await withDbRetry(() =>
+      Promise.all([
+        db.select().from(employees).orderBy(asc(employees.employeeCode)),
+        db.select().from(tasks),
+        db.select().from(kpis),
+        db.select().from(responsibilities),
+      ])
+    );
     const today = getTodayDhaka();
 
     // Map metrics for each employee
@@ -497,51 +514,53 @@ app.put('/api/responsibilities/:id', requireAuth, async (req: AuthRequest, res: 
 app.get('/api/tasks', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const today = getTodayDhaka();
-    const allTasks = await db
-      .select({
-        id: tasks.id,
-        taskCode: tasks.taskCode,
-        title: tasks.title,
-        description: tasks.description,
-        assignedEmployeeId: tasks.assignedEmployeeId,
-        assigningManagerName: tasks.assigningManagerName,
-        relatedResponsibilityId: tasks.relatedResponsibilityId,
-        relatedKpiId: tasks.relatedKpiId,
-        priority: tasks.priority,
-        assignmentDate: tasks.assignmentDate,
-        startDate: tasks.startDate,
-        originalDeadline: tasks.originalDeadline,
-        revisedDeadline: tasks.revisedDeadline,
-        revisedBy: tasks.revisedBy,
-        revisedAt: tasks.revisedAt,
-        extensionReason: tasks.extensionReason,
-        completionDate: tasks.completionDate,
-        status: tasks.status,
-        progressPercent: tasks.progressPercent,
-        employeeCompletionNotes: tasks.employeeCompletionNotes,
-        delayReason: tasks.delayReason,
-        delayCategory: tasks.delayCategory,
-        managerComments: tasks.managerComments,
-        supportingAttachments: tasks.supportingAttachments,
-        approvalStatus: tasks.approvalStatus,
-        isPoked: tasks.isPoked,
-        pokedBy: tasks.pokedBy,
-        pokedAt: tasks.pokedAt,
-        pokeCount: tasks.pokeCount,
-        createdBy: tasks.createdBy,
-        lastUpdatedBy: tasks.lastUpdatedBy,
-        createdAt: tasks.createdAt,
-        updatedAt: tasks.updatedAt,
-        employeeName: employees.name,
-        employeeDesignation: employees.designation,
-        employeeEmail: employees.email,
-        employeeCode: employees.employeeCode,
-        responsibilityTitle: responsibilities.title,
-      })
-      .from(tasks)
-      .leftJoin(employees, eq(tasks.assignedEmployeeId, employees.id))
-      .leftJoin(responsibilities, eq(tasks.relatedResponsibilityId, responsibilities.id))
-      .orderBy(desc(tasks.id));
+    const allTasks = await withDbRetry(() =>
+      db
+        .select({
+          id: tasks.id,
+          taskCode: tasks.taskCode,
+          title: tasks.title,
+          description: tasks.description,
+          assignedEmployeeId: tasks.assignedEmployeeId,
+          assigningManagerName: tasks.assigningManagerName,
+          relatedResponsibilityId: tasks.relatedResponsibilityId,
+          relatedKpiId: tasks.relatedKpiId,
+          priority: tasks.priority,
+          assignmentDate: tasks.assignmentDate,
+          startDate: tasks.startDate,
+          originalDeadline: tasks.originalDeadline,
+          revisedDeadline: tasks.revisedDeadline,
+          revisedBy: tasks.revisedBy,
+          revisedAt: tasks.revisedAt,
+          extensionReason: tasks.extensionReason,
+          completionDate: tasks.completionDate,
+          status: tasks.status,
+          progressPercent: tasks.progressPercent,
+          employeeCompletionNotes: tasks.employeeCompletionNotes,
+          delayReason: tasks.delayReason,
+          delayCategory: tasks.delayCategory,
+          managerComments: tasks.managerComments,
+          supportingAttachments: tasks.supportingAttachments,
+          approvalStatus: tasks.approvalStatus,
+          isPoked: tasks.isPoked,
+          pokedBy: tasks.pokedBy,
+          pokedAt: tasks.pokedAt,
+          pokeCount: tasks.pokeCount,
+          createdBy: tasks.createdBy,
+          lastUpdatedBy: tasks.lastUpdatedBy,
+          createdAt: tasks.createdAt,
+          updatedAt: tasks.updatedAt,
+          employeeName: employees.name,
+          employeeDesignation: employees.designation,
+          employeeEmail: employees.email,
+          employeeCode: employees.employeeCode,
+          responsibilityTitle: responsibilities.title,
+        })
+        .from(tasks)
+        .leftJoin(employees, eq(tasks.assignedEmployeeId, employees.id))
+        .leftJoin(responsibilities, eq(tasks.relatedResponsibilityId, responsibilities.id))
+        .orderBy(desc(tasks.id))
+    );
 
     const processed = allTasks.map((t) => processTaskOverdue(t, today));
     res.json(processed);
@@ -568,47 +587,65 @@ app.post('/api/tasks', requireAuth, async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Title, description, assigned employee, and deadline are required.' });
     }
 
+    const parsedEmpId = parseInt(String(assignedEmployeeId), 10);
+    if (isNaN(parsedEmpId) || parsedEmpId <= 0 || parsedEmpId > 2147483647) {
+      return res.status(400).json({ error: 'Invalid assigned employee selection. Please refresh the employee list and try again.' });
+    }
+
+    const [assignee] = await withDbRetry(() =>
+      db.select({ id: employees.id }).from(employees).where(eq(employees.id, parsedEmpId))
+    );
+    if (!assignee) {
+      return res.status(400).json({ error: 'Selected employee was not found in the database.' });
+    }
+
     const taskCode = `TSK-${Math.floor(1000 + Math.random() * 9000)}`;
     const today = getTodayDhaka();
 
-    const [newTask] = await db.insert(tasks).values({
-      taskCode,
-      title,
-      description,
-      assignedEmployeeId: parseInt(assignedEmployeeId, 10),
-      assigningManagerName: req.user?.name || 'HR Team',
-      relatedResponsibilityId: relatedResponsibilityId ? parseInt(relatedResponsibilityId, 10) : null,
-      relatedKpiId: relatedKpiId ? parseInt(relatedKpiId, 10) : null,
-      priority: priority || 'Medium',
-      assignmentDate: today,
-      startDate: startDate || today,
-      originalDeadline,
-      status: 'Not Started',
-      progressPercent: 0,
-      approvalStatus: 'Not Submitted',
-      isPoked: false,
-      pokeCount: 0,
-      createdBy: req.user?.name || 'Team Member',
-      lastUpdatedBy: req.user?.name || 'Team Member',
-    }).returning();
+    const [newTask] = await withDbRetry(() =>
+      db.insert(tasks).values({
+        taskCode,
+        title,
+        description,
+        assignedEmployeeId: parsedEmpId,
+        assigningManagerName: req.user?.name || 'HR Team',
+        relatedResponsibilityId: relatedResponsibilityId ? parseInt(relatedResponsibilityId, 10) : null,
+        relatedKpiId: relatedKpiId ? parseInt(relatedKpiId, 10) : null,
+        priority: priority || 'Medium',
+        assignmentDate: today,
+        startDate: startDate || today,
+        originalDeadline,
+        status: 'Not Started',
+        progressPercent: 0,
+        approvalStatus: 'Not Submitted',
+        isPoked: false,
+        pokeCount: 0,
+        createdBy: req.user?.name || 'Team Member',
+        lastUpdatedBy: req.user?.name || 'Team Member',
+      }).returning()
+    );
 
     // Audit log
-    await db.insert(taskAuditLogs).values({
-      taskId: newTask.id,
-      actionType: 'created',
-      actionSummary: `Task ${taskCode} created by ${req.user?.name} and assigned with deadline ${originalDeadline}.`,
-      performedBy: req.user?.name || 'Team Member',
-    });
+    await withDbRetry(() =>
+      db.insert(taskAuditLogs).values({
+        taskId: newTask.id,
+        actionType: 'created',
+        actionSummary: `Task ${taskCode} created by ${req.user?.name} and assigned with deadline ${originalDeadline}.`,
+        performedBy: req.user?.name || 'Team Member',
+      })
+    );
 
     // Notification to assigned employee
-    await db.insert(notifications).values({
-      recipientEmployeeId: parseInt(assignedEmployeeId, 10),
-      title: `New Task Assigned: ${title}`,
-      message: `You have been assigned "${title}" due on ${originalDeadline} by ${req.user?.name}.`,
-      type: 'task_assigned',
-      linkId: newTask.id,
-      isRead: false,
-    });
+    await withDbRetry(() =>
+      db.insert(notifications).values({
+        recipientEmployeeId: parsedEmpId,
+        title: `New Task Assigned: ${title}`,
+        message: `You have been assigned "${title}" due on ${originalDeadline} by ${req.user?.name}.`,
+        type: 'task_assigned',
+        linkId: newTask.id,
+        isRead: false,
+      })
+    );
 
     res.json(newTask);
   } catch (error: any) {
@@ -1005,36 +1042,38 @@ app.get('/api/tasks/:id/history', requireAuth, async (req: AuthRequest, res: Res
 // 5. KPI Module
 app.get('/api/kpis', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
-    const allKpis = await db
-      .select({
-        id: kpis.id,
-        kpiCode: kpis.kpiCode,
-        employeeId: kpis.employeeId,
-        title: kpis.title,
-        description: kpis.description,
-        category: kpis.category,
-        measurementMethod: kpis.measurementMethod,
-        targetValue: kpis.targetValue,
-        actualValue: kpis.actualValue,
-        unit: kpis.unit,
-        weight: kpis.weight,
-        reportingPeriod: kpis.reportingPeriod,
-        startDate: kpis.startDate,
-        endDate: kpis.endDate,
-        dataSource: kpis.dataSource,
-        evidenceNotes: kpis.evidenceNotes,
-        submissionStatus: kpis.submissionStatus,
-        managerReviewStatus: kpis.managerReviewStatus,
-        approvedAchievementPercentage: kpis.approvedAchievementPercentage,
-        createdAt: kpis.createdAt,
-        updatedAt: kpis.updatedAt,
-        employeeName: employees.name,
-        employeeDesignation: employees.designation,
-        employeeCode: employees.employeeCode,
-      })
-      .from(kpis)
-      .leftJoin(employees, eq(kpis.employeeId, employees.id))
-      .orderBy(asc(kpis.kpiCode));
+    const allKpis = await withDbRetry(() =>
+      db
+        .select({
+          id: kpis.id,
+          kpiCode: kpis.kpiCode,
+          employeeId: kpis.employeeId,
+          title: kpis.title,
+          description: kpis.description,
+          category: kpis.category,
+          measurementMethod: kpis.measurementMethod,
+          targetValue: kpis.targetValue,
+          actualValue: kpis.actualValue,
+          unit: kpis.unit,
+          weight: kpis.weight,
+          reportingPeriod: kpis.reportingPeriod,
+          startDate: kpis.startDate,
+          endDate: kpis.endDate,
+          dataSource: kpis.dataSource,
+          evidenceNotes: kpis.evidenceNotes,
+          submissionStatus: kpis.submissionStatus,
+          managerReviewStatus: kpis.managerReviewStatus,
+          approvedAchievementPercentage: kpis.approvedAchievementPercentage,
+          createdAt: kpis.createdAt,
+          updatedAt: kpis.updatedAt,
+          employeeName: employees.name,
+          employeeDesignation: employees.designation,
+          employeeCode: employees.employeeCode,
+        })
+        .from(kpis)
+        .leftJoin(employees, eq(kpis.employeeId, employees.id))
+        .orderBy(asc(kpis.kpiCode))
+    );
 
     // Calculate preliminary achievement % for submitted actuals
     const enriched = allKpis.map((k) => {
@@ -1221,10 +1260,14 @@ app.delete('/api/kpis/:id', requireAuth, async (req: AuthRequest, res: Response)
 app.get('/api/performance/ranking', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const today = getTodayDhaka();
-    const allEmployees = await db.select().from(employees).where(eq(employees.status, 'active')).orderBy(asc(employees.employeeCode));
-    const allTasks = await db.select().from(tasks);
-    const allKpis = await db.select().from(kpis);
-    const settingsList = await db.select().from(appSettings);
+    const [allEmployees, allTasks, allKpis, settingsList] = await withDbRetry(() =>
+      Promise.all([
+        db.select().from(employees).where(eq(employees.status, 'active')).orderBy(asc(employees.employeeCode)),
+        db.select().from(tasks),
+        db.select().from(kpis),
+        db.select().from(appSettings),
+      ])
+    );
 
     const settingsMap = Object.fromEntries(settingsList.map((s) => [s.settingKey, s.settingValue]));
     const kpiWeight = parseFloat(settingsMap['scoring_kpi_weight'] || '70') / 100;
@@ -1326,9 +1369,13 @@ app.get('/api/performance/ranking', requireAuth, async (req: AuthRequest, res: R
 app.get('/api/dashboard/stats', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const today = getTodayDhaka();
-    const allEmployees = await db.select().from(employees).where(eq(employees.status, 'active'));
-    const rawTasks = await db.select().from(tasks);
-    const allKpis = await db.select().from(kpis);
+    const [allEmployees, rawTasks, allKpis] = await withDbRetry(() =>
+      Promise.all([
+        db.select().from(employees).where(eq(employees.status, 'active')),
+        db.select().from(tasks),
+        db.select().from(kpis),
+      ])
+    );
     const allTasks = rawTasks.map((t) => processTaskOverdue(t, today));
 
     // 10 Mandatory Metrics:
@@ -1545,17 +1592,16 @@ function calculateCalendarDays(startDate: string, endDate: string): number {
 app.get(['/api/recruitment/requisitions', '/api/requisitions'], requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const today = getTodayDhaka();
-    let records = await db.select().from(recruitmentRequisitions).orderBy(asc(recruitmentRequisitions.sl));
+    let records = await withDbRetry(() =>
+      db.select().from(recruitmentRequisitions).orderBy(asc(recruitmentRequisitions.sl))
+    );
 
-    // If live database table is empty, auto-seed initial sample requisitions automatically
+    // If live database table is empty, auto-seed initial sample requisitions once
     if (records.length === 0) {
-      console.log('Database recruitment_requisitions table is empty. Auto-seeding initial recruitment requisitions...');
-      try {
-        await seedRecruitmentDatabase();
-        records = await db.select().from(recruitmentRequisitions).orderBy(asc(recruitmentRequisitions.sl));
-      } catch (seedErr: any) {
-        console.warn('Auto-seed recruitment note:', seedErr.message || seedErr);
-      }
+      await withDbRetry(() => seedRecruitmentDatabase());
+      records = await withDbRetry(() =>
+        db.select().from(recruitmentRequisitions).orderBy(asc(recruitmentRequisitions.sl))
+      );
     }
 
     const enriched = records.map((item) => {
@@ -1571,40 +1617,7 @@ app.get(['/api/recruitment/requisitions', '/api/requisitions'], requireAuth, asy
 
     res.json(enriched);
   } catch (error: any) {
-    console.warn('Database requisition query note, returning fallback records:', error?.message || error);
-    const today = getTodayDhaka();
-    const fallback = RAW_MRF_DATA.map((r) => {
-      let pendingDays = 0;
-      if (r.recruitmentStatus === 'Ongoing' || r.recruitmentStatus === 'Held Up') {
-        pendingDays = calculateCalendarDays(r.requisitionDate, today);
-      }
-      return {
-        id: r.sl,
-        sl: r.sl,
-        requisitionCode: `MRF-2026-${String(r.sl).padStart(3, '0')}`,
-        positionTitle: r.positionTitle,
-        department: r.department,
-        requisitionDate: r.requisitionDate,
-        requisitionSubmittedBy: r.requisitionSubmittedBy,
-        hod: r.hod,
-        company: r.company,
-        vacancy: r.vacancy,
-        recruitmentType: r.recruitmentType,
-        replacementOfWhom: r.replacementOfWhom || null,
-        replacementEmployeeSalary: r.replacementEmployeeSalary || null,
-        offerLetterDate: r.offerLetterDate || null,
-        dateOfJoining: r.dateOfJoining || null,
-        recruitmentStatus: r.recruitmentStatus,
-        timeToFillDays: r.recruitmentStatus === 'Joined' && r.dateOfJoining ? calculateCalendarDays(r.requisitionDate, r.dateOfJoining) : null,
-        remarks: r.remarks || null,
-        recruitmentAssistedByName: r.assistedByName,
-        recruitmentAssistedByCode: r.assistedByCode,
-        createdByName: 'System Administrator',
-        version: 1,
-        pendingDays,
-      };
-    });
-    res.json(fallback);
+    res.status(500).json({ error: error?.message || 'Failed to fetch recruitment requisitions from database.' });
   }
 });
 
@@ -1612,7 +1625,9 @@ app.get(['/api/recruitment/requisitions', '/api/requisitions'], requireAuth, asy
 app.get(['/api/recruitment/requisitions/:id', '/api/requisitions/:id'], requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const [record] = await db.select().from(recruitmentRequisitions).where(eq(recruitmentRequisitions.id, id));
+    const [record] = await withDbRetry(() =>
+      db.select().from(recruitmentRequisitions).where(eq(recruitmentRequisitions.id, id))
+    );
     if (!record) {
       return res.status(404).json({ error: 'Requisition not found.' });
     }
@@ -1671,15 +1686,11 @@ app.post(['/api/recruitment/requisitions', '/api/requisitions'], requireAuth, as
     }
 
     // Determine SL safely
-    let nextSl = 1;
-    try {
-      const existingList = await db.select({ sl: recruitmentRequisitions.sl }).from(recruitmentRequisitions);
-      const maxSl = existingList.length > 0 ? Math.max(...existingList.map((r) => r.sl || 0)) : 0;
-      nextSl = maxSl + 1;
-    } catch (slErr) {
-      console.warn('Note determining next SL, defaulting to timestamp-based sequence:', slErr);
-      nextSl = Math.floor(Date.now() / 1000) % 10000;
-    }
+    const existingList = await withDbRetry(() =>
+      db.select({ sl: recruitmentRequisitions.sl }).from(recruitmentRequisitions)
+    );
+    const maxSl = existingList.length > 0 ? Math.max(...existingList.map((r) => r.sl || 0)) : 0;
+    const nextSl = maxSl + 1;
     const requisitionCode = `MRF-2026-${String(nextSl).padStart(3, '0')}`;
 
     // Auto-calculate time to fill if joined
@@ -1693,17 +1704,18 @@ app.post(['/api/recruitment/requisitions', '/api/requisitions'], requireAuth, as
     let assistedById: number | null = null;
     if (recruitmentAssistedByCode) {
       try {
-        const [emp] = await db
-          .select({ id: employees.id })
-          .from(employees)
-          .where(eq(employees.employeeCode, recruitmentAssistedByCode));
+        const [emp] = await withDbRetry(() =>
+          db
+            .select({ id: employees.id })
+            .from(employees)
+            .where(eq(employees.employeeCode, recruitmentAssistedByCode))
+        );
         if (emp) assistedById = emp.id;
       } catch {}
     }
 
-    let created: any = null;
-    try {
-      const [record] = await db
+    const [created] = await withDbRetry(() =>
+      db
         .insert(recruitmentRequisitions)
         .values({
           sl: nextSl,
@@ -1732,57 +1744,26 @@ app.post(['/api/recruitment/requisitions', '/api/requisitions'], requireAuth, as
           lastUpdatedByName: req.user?.name || 'HR Employee',
           version: 1,
         })
-        .returning();
-      created = record;
-    } catch (insertErr: any) {
-      console.warn('Full Drizzle insert note, attempting safe pool column fallback insert:', insertErr.message || insertErr);
-      try {
-        const rawRes = await pool.query(
-          `INSERT INTO recruitment_requisitions (
-            sl, requisition_code, position_title, department, requisition_date, 
-            requisition_submitted_by, hod, company, vacancy, recruitment_type, 
-            recruitment_status, recruitment_assisted_by_name
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-          RETURNING *`,
-          [
-            nextSl,
-            requisitionCode,
-            posTitle,
-            dept,
-            reqDate,
-            submittedBy,
-            hodName,
-            comp,
-            vacancy ? parseInt(String(vacancy), 10) : 1,
-            (recruitmentType || 'New Recruitment').trim(),
-            status,
-            assistedName,
-          ]
-        );
-        created = rawRes.rows[0];
-      } catch (fallbackErr: any) {
-        console.error('Safe fallback database insert error:', fallbackErr);
-        return res.status(500).json({
-          error: `Database insertion error: ${insertErr.message || fallbackErr.message || 'Schema mismatch'}`,
-        });
-      }
-    }
+        .returning()
+    );
 
     // Audit Log (wrapped in try/catch so audit log failure never blocks requisition creation)
     try {
-      await db.insert(recruitmentAuditLogs).values({
-        requisitionId: created.id,
-        requisitionCode: created.requisitionCode,
-        positionTitle: created.positionTitle,
-        action: 'CREATE',
-        fieldName: 'ALL',
-        previousValue: null,
-        newValue: `Status: ${created.recruitmentStatus}, Company: ${created.company}`,
-        details: `Requisition created for ${created.positionTitle} (${created.department}) assisted by ${created.recruitmentAssistedByName}.`,
-        performedByUserId: req.user?.employeeCode || req.user?.uid,
-        performedByName: req.user?.name || 'HR Employee',
-        performedByRole: req.user?.role,
-      });
+      await withDbRetry(() =>
+        db.insert(recruitmentAuditLogs).values({
+          requisitionId: created.id,
+          requisitionCode: created.requisitionCode,
+          positionTitle: created.positionTitle,
+          action: 'CREATE',
+          fieldName: 'ALL',
+          previousValue: null,
+          newValue: `Status: ${created.recruitmentStatus}, Company: ${created.company}`,
+          details: `Requisition created for ${created.positionTitle} (${created.department}) assisted by ${created.recruitmentAssistedByName}.`,
+          performedByUserId: req.user?.employeeCode || req.user?.uid,
+          performedByName: req.user?.name || 'HR Employee',
+          performedByRole: req.user?.role,
+        })
+      );
     } catch (auditErr: any) {
       console.warn('Audit log creation note (requisition saved successfully):', auditErr.message || auditErr);
     }
@@ -2091,7 +2072,7 @@ app.get('/api/recruitment/analytics', requireAuth, async (req: AuthRequest, res:
     const filterCompany = req.query.company as string | undefined;
     const filterHod = req.query.hod as string | undefined;
 
-    let records = await db.select().from(recruitmentRequisitions);
+    let records = await withDbRetry(() => db.select().from(recruitmentRequisitions));
     if (filterCompany && filterCompany !== 'ALL') {
       records = records.filter((r) => r.company === filterCompany);
     }
@@ -2570,8 +2551,8 @@ async function startServer() {
     });
 }
 
-// Start Server only if running as standalone process (not on Vercel serverless)
-if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+// Start Server only if running as standalone process (not on Vercel/Netlify/AWS serverless)
+if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME && !process.env.NETLIFY) {
   startServer();
 }
 

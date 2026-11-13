@@ -181,48 +181,12 @@ const MainAppContent: React.FC = () => {
   // Recruitment Actions
   const handleSaveRequisition = async (data: Partial<RecruitmentRequisition>) => {
     let savedRecord: RecruitmentRequisition | null = null;
-    try {
-      if (data.id) {
-        savedRecord = await api.updateRecruitmentRequisition(data.id, data);
-      } else {
-        savedRecord = await api.createRecruitmentRequisition(data);
-      }
-      await loadRecruitmentData(true);
-    } catch (err: any) {
-      console.warn('Database requisition API call note, applying optimistic local state:', err);
-      savedRecord = {
-        id: data.id || Date.now(),
-        sl: data.sl || recruitmentRequisitions.length + 1,
-        requisitionCode: data.requisitionCode || `MRF-2026-${String(recruitmentRequisitions.length + 1).padStart(3, '0')}`,
-        positionTitle: data.positionTitle || 'New Position',
-        department: data.department || 'HR & OD',
-        requisitionDate: data.requisitionDate || new Date().toISOString().split('T')[0],
-        requisitionSubmittedBy: data.requisitionSubmittedBy || 'HR Requisitioner',
-        hod: data.hod || 'Department Head',
-        company: data.company || 'RAL',
-        vacancy: data.vacancy || 1,
-        recruitmentType: data.recruitmentType || 'New Recruitment',
-        replacementOfWhom: data.replacementOfWhom || null,
-        replacementEmployeeSalary: data.replacementEmployeeSalary || null,
-        offerLetterDate: data.offerLetterDate || null,
-        dateOfJoining: data.dateOfJoining || null,
-        recruitmentStatus: data.recruitmentStatus || 'Ongoing',
-        timeToFillDays: data.timeToFillDays || null,
-        remarks: data.remarks || null,
-        recruitmentAssistedByName: data.recruitmentAssistedByName || 'Syeda Shaila Ashraf',
-        version: 1,
-      };
-
-      setRecruitmentRequisitions((prev) => {
-        const existingIdx = prev.findIndex((r) => r.id === savedRecord!.id);
-        if (existingIdx >= 0) {
-          const copy = [...prev];
-          copy[existingIdx] = savedRecord!;
-          return copy;
-        }
-        return [savedRecord!, ...prev];
-      });
+    if (data.id) {
+      savedRecord = await api.updateRecruitmentRequisition(data.id, data);
+    } else {
+      savedRecord = await api.createRecruitmentRequisition(data);
     }
+    await loadRecruitmentData(true);
 
     if (data.recruitmentStatus === 'Joined' && savedRecord) {
       setDashboardStatusFilter('Joined');
