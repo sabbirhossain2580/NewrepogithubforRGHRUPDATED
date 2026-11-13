@@ -136,31 +136,46 @@ export function normalizeEmpCode(code: string): string {
   return code.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-// Authorized credentials mapping for the 7 HR core members
-// Universal default passwords accepted for any authorized account
-const COMMON_PASSWORDS = [
-  'rg-hr-secure-2026',
-  'renaissance',
-  '123456',
-  'password',
-  'admin123',
-  'manager123',
-  'hr123',
-];
-
-// Authorized credentials mapping for the 7 HR core members
-const AUTHORIZED_PASSWORDS: Record<string, string[]> = {
-  '01-02-0440': [...COMMON_PASSWORDS, 'hr123', 'shaila', 'shaila123', '01-02-0440', '01020440'],
-  '22-02-1826': [...COMMON_PASSWORDS, 'manager123', 'naiem', 'naiem123', '22-02-1826', '22021826'],
-  '22-02-1330': [...COMMON_PASSWORDS, 'nuzhat', 'manager123', 'nuzhat123', '22-02-1330', '22021330'],
-  '22-02-1642': [...COMMON_PASSWORDS, 'manager123', 'sabbir', 'sabbir123', '22-02-1642', '22021642'],
-  '02-02-2059': [...COMMON_PASSWORDS, 'manager123', 'fariha', 'fariha123', '02-02-2059', '02022059'],
-  '22-02-1551': [...COMMON_PASSWORDS, 'manager123', 'maisha', 'maisha123', '22-02-1551', '22021551'],
-  '02-02-2222': [...COMMON_PASSWORDS, 'admin123', 'admin', '02-02-2222', '02022222'],
+// Salted PBKDF2-SHA256 hashes (10000 iterations, salt: rg-hr-pbkdf2-salt-2026) — zero plaintext passwords in client code
+const AUTHORIZED_PASSWORD_HASHES: Record<string, string> = {
+  '01-02-0440': 'bc1441845bac26e17bc29b3716831a53c28cabd23e155b573a96e49893121503',
+  '22-02-1826': 'fdf88d67ab09255f74bd4067129b927ef4ee8df41726dbbe747455185b889b61',
+  '22-02-1330': '2bfbb3fd1cb62694b85786193a6bacce29bc03759c169d096e2f248b0b57289d',
+  '22-02-1642': '64217b30ac2c1ea9a0f1b64b0d83cd54abe8b9ef969d2df7d5a38da475a40f32',
+  '02-02-2059': '18ce6ecef5f696fb16fdd9346b97bdd76f88677fffe6762d303d2a6c3b4ddf90',
+  '22-02-1551': '7f9e1303cb9f4e3d8c76a9af7e712dacb3b0b28088e50b761d585505fcf0c0ef',
+  '02-02-2222': '00bc59efc1f8c238346930464575b71570b3ac9dfffbe252cd5952e6c2a7a751',
 };
 
-export function verifyLocalCredentials(rawCode: string, rawPass: string): PersonaOption | null {
-  if (!rawPass || rawPass.trim().length === 0) return null;
+async function computePbkdf2Hex(plain: string): Promise<string | null> {
+  if (typeof window === 'undefined' || !window.crypto?.subtle) return null;
+  const enc = new TextEncoder();
+  const keyMaterial = await window.crypto.subtle.importKey(
+    'raw',
+    enc.encode(plain),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits']
+  );
+  const derivedBits = await window.crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: enc.encode('rg-hr-pbkdf2-salt-2026'),
+      iterations: 10000,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    256
+  );
+  return Array.from(new Uint8Array(derivedBits))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export async function verifyLocalCredentials(rawCode: string, rawPass: string): Promise<PersonaOption | null> {
+  const trimmedPass = rawPass.trim();
+  if (!trimmedPass) return null;
+
   const normInput = normalizeEmpCode(rawCode);
   const rawLower = rawCode.trim().toLowerCase();
   const matchedPersona = PRESET_PERSONAS.find(
@@ -171,7 +186,12 @@ export function verifyLocalCredentials(rawCode: string, rawPass: string): Person
   );
   if (!matchedPersona) return null;
 
-  // As in the previous working version, any recognized employee with their password can log in
+  const expectedHash = AUTHORIZED_PASSWORD_HASHES[matchedPersona.employeeCode];
+  if (!expectedHash) return null;
+
+  const candidateHash = await computePbkdf2Hex(trimmedPass);
+  if (!candidateHash || candidateHash !== expectedHash) return null;
+
   return matchedPersona;
 }
 
@@ -319,33 +339,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setIsAuthenticated(true);
           return { success: true };
         } else {
-          // Fallback to local verification in case of server salt or network inconsistency
-          const localMatch = verifyLocalCredentials(rawCode, rawPass);
-          if (localMatch) {
-            sessionStorage.setItem('hr_session_token', `local-session-${Date.now()}`);
-            sessionStorage.setItem('hr_authenticated', 'true');
-            sessionStorage.setItem('hr_active_emp_code', localMatch.employeeCode);
-            setActivePersona(localMatch);
-            setUser({
-              uid: `user-${localMatch.employeeCode}`,
-              email: localMatch.email,
-              name: localMatch.name,
-              role: localMatch.role,
-              employeeCode: localMatch.employeeCode,
-              designation: localMatch.designation,
-            });
-            setIsAuthenticated(true);
-            return { success: true };
-          }
-
           return {
             success: false,
             message: data.error || 'Invalid credentials. Please check your Employee ID and Password.',
           };
         }
       } else {
-        // Server returned non-JSON (e.g. 405 Method Not Allowed on static Vercel rewrite or offline)
-        const localMatch = verifyLocalCredentials(rawCode, rawPass);
+        // Server returned non-JSON (e.g. 404/405 on static host or offline)
+        const localMatch = await verifyLocalCredentials(rawCode, rawPass);
         if (localMatch) {
           sessionStorage.setItem('hr_session_token', `local-session-${Date.now()}`);
           sessionStorage.setItem('hr_authenticated', 'true');
@@ -372,7 +373,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     // 2. Resilient Client-Side Fallback for Vite preview / offline / cloned repositories
-    const localMatch = verifyLocalCredentials(rawCode, rawPass);
+    const localMatch = await verifyLocalCredentials(rawCode, rawPass);
     if (localMatch) {
       sessionStorage.setItem('hr_session_token', `local-session-${Date.now()}`);
       sessionStorage.setItem('hr_authenticated', 'true');
